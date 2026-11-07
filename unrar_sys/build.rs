@@ -1,14 +1,22 @@
+// Patched for cross-compiling: the upstream script tests `cfg!(windows)`, which
+// is the *host* OS, so a Linux -> Windows build skipped isnt.cpp and powrprof.
+// It also linked pthread dynamically on windows-gnu, making the exe need
+// MinGW's libwinpthread-1.dll; Rust's std already links it statically. And
+// Android has no separate pthread library, and needs its C++ library named.
 fn main() {
-    if cfg!(windows) {
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows";
+    if windows {
         println!("cargo:rustc-flags=-lpowrprof");
         println!("cargo:rustc-link-lib=shell32");
-        if cfg!(target_env = "gnu") {
-            println!("cargo:rustc-link-lib=pthread");
-        }
+    } else if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "android" {
+        // Android's pthread is part of its libc, and its C++ library is
+        // linked into the app rather than shipped beside it.
+        println!("cargo:rustc-link-lib=c++_static");
+        println!("cargo:rustc-link-lib=c++abi");
     } else {
         println!("cargo:rustc-link-lib=pthread");
     }
-    let files: Vec<String> = [
+    let mut files: Vec<&str> = vec![
         "strlist",
         "strfn",
         "pathfn",
@@ -21,8 +29,6 @@ fn main() {
         "arcread",
         "unicode",
         "system",
-        #[cfg(windows)]
-        "isnt",
         "crypt",
         "crc",
         "rawread",
@@ -56,8 +62,21 @@ fn main() {
         "scantree",
         "dll",
         "qopen",
-    ].iter().map(|&s| format!("vendor/unrar/{s}.cpp")).collect();
-    cc::Build::new()
+    ];
+    if windows {
+        files.push("isnt");
+    }
+    let files: Vec<String> = files.iter().map(|s| format!("vendor/unrar/{s}.cpp")).collect();
+    let mut build = cc::Build::new();
+    // Keep GCC's CPU detection (built for a newer CPU on some distros) out of
+    // the binary; see cpu_supports.hpp.
+    let x86 = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "x86_64" || a == "x86");
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux" && x86 {
+        let header = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("cpu_supports.hpp");
+        build.flag("-include").flag(header.to_str().unwrap());
+    }
+    build
         .cpp(true) // Switch to C++ library compilation.
         .opt_level(2)
         .std("c++14")
